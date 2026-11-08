@@ -1,3 +1,4 @@
+pub mod log;
 pub mod model;
 
 pub use model::{Entity, EntityId, Episode, EpisodeId, Op, Relation, RelationId, Timestamp};

@@ -1,14 +1,19 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+pub mod model;
+
+pub use model::{Entity, EntityId, Episode, EpisodeId, Op, Relation, RelationId, Timestamp};
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("write conflict at seq {seq}: another writer committed first")]
+    Conflict { seq: u64 },
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
+    #[error("corrupt log: {0}")]
+    Corrupt(String),
+    #[error(transparent)]
+    Store(#[from] object_store::Error),
+    #[error(transparent)]
+    Serde(#[from] serde_json::Error),
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub type Result<T, E = Error> = std::result::Result<T, E>;

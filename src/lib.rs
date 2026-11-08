@@ -3,7 +3,7 @@ pub mod log;
 pub mod memory;
 pub mod model;
 
-pub use memory::{EntityInput, Memory, RelationInput, Writer};
+pub use memory::{EntityInput, Memory, Recall, RecallResult, RelationInput, Scored, Writer};
 pub use model::{Entity, EntityId, Episode, EpisodeId, Op, Relation, RelationId, Timestamp};
 
 #[derive(Debug, thiserror::Error)]

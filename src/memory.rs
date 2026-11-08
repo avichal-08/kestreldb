@@ -1,4 +1,5 @@
-use std::collections::BTreeMap;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use object_store::ObjectStore;
@@ -100,6 +101,180 @@ impl Memory {
         facts
     }
 
+    pub fn recall(&self, q: &Recall) -> RecallResult {
+        let query_terms = q.text.as_deref().map(terms).unwrap_or_default();
+        let score = |text: &str, emb: Option<&Vec<f32>>| -> f32 {
+            let mut s = 0.0;
+            if let (Some(qe), Some(e)) = (q.embedding.as_ref(), emb) {
+                s += cosine(qe, e).max(0.0);
+            }
+            if !query_terms.is_empty() {
+                let t = terms(text);
+                let hits = query_terms.iter().filter(|w| t.contains(*w)).count();
+                s += hits as f32 / query_terms.len() as f32;
+            }
+            s
+        };
+
+        // a matching fact seeds both of its ends
+        let mut seeds: HashMap<EntityId, f32> = HashMap::new();
+        let bump = |seeds: &mut HashMap<EntityId, f32>, id: EntityId, s: f32| {
+            let e = seeds.entry(id).or_insert(0.0);
+            *e = e.max(s);
+        };
+        for e in self.graph.entities.values() {
+            let s = score(&format!("{} {}", e.name, e.summary), e.embedding.as_ref());
+            if s > 0.0 {
+                bump(&mut seeds, e.id, s);
+            }
+        }
+        for r in self.graph.relations.values().filter(|r| r.is_active(q.as_of)) {
+            let s = score(&r.fact, r.embedding.as_ref());
+            if s > 0.0 {
+                bump(&mut seeds, r.from, s);
+                bump(&mut seeds, r.to, s);
+            }
+        }
+        let mut ranked: Vec<_> = seeds.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
+        ranked.truncate(q.k);
+
+        let mut scores: HashMap<EntityId, f32> = ranked.iter().copied().collect();
+        let mut frontier = ranked;
+        let mut rels: HashSet<RelationId> = HashSet::new();
+        for _ in 0..q.hops {
+            let mut next = Vec::new();
+            for (id, s) in frontier {
+                for r in self.graph.edges(id, q.as_of) {
+                    rels.insert(r.id);
+                    let other = if r.from == id { r.to } else { r.from };
+                    let ns = s * HOP_DECAY;
+                    let cur = scores.entry(other).or_insert(0.0);
+                    if ns > *cur {
+                        *cur = ns;
+                        next.push((other, ns));
+                    }
+                }
+            }
+            if scores.len() >= q.max_entities {
+                break;
+            }
+            frontier = next;
+        }
+
+        let mut entities: Vec<Scored<Entity>> = scores
+            .into_iter()
+            .filter_map(|(id, score)| {
+                self.graph.entities.get(&id).map(|e| Scored { score, item: e.clone() })
+            })
+            .collect();
+        entities.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+        entities.truncate(q.max_entities);
+        let kept: HashSet<EntityId> = entities.iter().map(|e| e.item.id).collect();
+
+        for id in &kept {
+            for r in self.graph.edges(*id, q.as_of) {
+                if kept.contains(&r.from) && kept.contains(&r.to) {
+                    rels.insert(r.id);
+                }
+            }
+        }
+        let mut relations: Vec<Relation> = rels
+            .into_iter()
+            .filter_map(|id| self.graph.relations.get(&id))
+            .filter(|r| kept.contains(&r.from) && kept.contains(&r.to))
+            .cloned()
+            .collect();
+        relations.sort_by_key(|r| r.created_at);
+
+        let episode_ids: HashSet<EpisodeId> = relations
+            .iter()
+            .flat_map(|r| r.episodes.iter())
+            .chain(entities.iter().flat_map(|e| e.item.episodes.iter()))
+            .copied()
+            .collect();
+        let mut episodes: Vec<Episode> = episode_ids
+            .into_iter()
+            .filter_map(|id| self.graph.episodes.get(&id).cloned())
+            .collect();
+        episodes.sort_by_key(|e| std::cmp::Reverse(e.occurred_at));
+        episodes.truncate(q.max_episodes);
+
+        RecallResult { entities, relations, episodes }
+    }
+}
+
+const HOP_DECAY: f32 = 0.5;
+
+fn terms(text: &str) -> HashSet<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 2)
+        .map(str::to_lowercase)
+        .collect()
+}
+
+fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let (mut dot, mut na, mut nb) = (0.0, 0.0, 0.0);
+    for (x, y) in a.iter().zip(b) {
+        dot += x * y;
+        na += x * x;
+        nb += y * y;
+    }
+    if na == 0.0 || nb == 0.0 { 0.0 } else { dot / (na.sqrt() * nb.sqrt()) }
+}
+
+#[derive(Debug, Clone)]
+pub struct Recall {
+    pub text: Option<String>,
+    pub embedding: Option<Vec<f32>>,
+    pub k: usize,
+    pub hops: usize,
+    pub as_of: Option<Timestamp>,
+    pub max_entities: usize,
+    pub max_episodes: usize,
+}
+
+impl Default for Recall {
+    fn default() -> Self {
+        Self { text: None, embedding: None, k: 5, hops: 1, as_of: None, max_entities: 50, max_episodes: 20 }
+    }
+}
+
+impl Recall {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self { text: Some(text.into()), ..Default::default() }
+    }
+    pub fn embedding(embedding: Vec<f32>) -> Self {
+        Self { embedding: Some(embedding), ..Default::default() }
+    }
+    pub fn k(mut self, k: usize) -> Self {
+        self.k = k;
+        self
+    }
+    pub fn hops(mut self, hops: usize) -> Self {
+        self.hops = hops;
+        self
+    }
+    pub fn as_of(mut self, t: Timestamp) -> Self {
+        self.as_of = Some(t);
+        self
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Scored<T> {
+    pub score: f32,
+    pub item: T,
+}
+
+#[derive(Debug, Clone)]
+pub struct RecallResult {
+    pub entities: Vec<Scored<Entity>>,
+    pub relations: Vec<Relation>,
+    pub episodes: Vec<Episode>,
 }
 
 #[derive(Debug, Clone, Default)]

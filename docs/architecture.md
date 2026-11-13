@@ -2,6 +2,10 @@
 
 kestreldb keeps an agent's memory as a graph: episodes it saw, entities it knows about and facts between them. The graph is rebuilt in memory from a log of batches in object storage. Nothing else holds state.
 
+![kestreldb proposed high level design](diagrams/architecture-v1.png)
+
+The diagram is the proposed design (v1). This document describes what's built today: the library parts of the node and the storage layout. The server, router, indexes and compactor are on the [roadmap](roadmap.md). Older diagram versions are in [diagrams](diagrams/README.md).
+
 ## Components
 
 | Part | Role |

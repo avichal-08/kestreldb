@@ -19,7 +19,7 @@ src/graph.rs            in-memory graph rebuilt from the log
 src/memory.rs           public api: open, write, refresh, facts, recall
 tests/memory.rs         end-to-end tests on in-memory and local-disk stores
 examples/quickstart.rs  the example below
-docs/                   architecture, decisions and roadmap
+docs/                   architecture, decisions, roadmap and diagrams
 ```
 
 ## Quickstart
@@ -106,8 +106,15 @@ If another writer committed first, `commit()` returns `Error::Conflict`. Call `r
 
 `write → batch → create-only put to wal/<seq> → replay on open, tail on refresh → recall`
 
+### Current architecture design
+
+![kestreldb proposed high level design](docs/diagrams/architecture-v1.png)
+
+This is the design the project is heading towards, not what's built today. Only the library is built so far: the write path, the log, replay and recall. The server, router, indexes, compactor and ingest are still to come. The design will change along the way. Past versions are kept in [docs/diagrams](docs/diagrams/README.md).
+
 | Doc | What it covers |
 | --- | --- |
+| [docs/diagrams](docs/diagrams/README.md) | every version of the architecture diagram |
 | [docs/architecture.md](docs/architecture.md) | data model, storage layout, write and read paths, recall, distribution |
 | [docs/decisions](docs/decisions/README.md) | why the big choices were made |
 | [docs/roadmap.md](docs/roadmap.md) | what's next |
